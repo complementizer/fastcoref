@@ -85,6 +85,7 @@ def update_metrics(metrics, span_starts, span_ends, gold_clusters, predicted_clu
 
 def encode(batch, tokenizer, nlp):
     if nlp is not None:
+        print('USING SPACY...')
         tokenized_texts = tokenize_with_spacy(batch['text'], nlp)
     else:
         tokenized_texts = batch
@@ -159,6 +160,40 @@ def align_to_char_level(span_starts, span_ends, token_to_char, subtoken_map=None
     return char_map, reverse_char_map
 
 
+def create_char_to_token_map(token_offsets):
+    max_char_idx = max(end for _, end in token_offsets)
+    char_to_token = [None] * (max_char_idx + 1)
+    
+    for token_idx, (start, end) in enumerate(token_offsets):
+        for char_idx in range(start, end):
+            char_to_token[char_idx] = token_idx
+
+    return char_to_token
+
+
+def map_char_spans_to_token_spans(char_spans, char_to_token):
+    def find_nearest_token(char_idx, char_to_token, direction=1):
+        while 0 <= char_idx < len(char_to_token) and char_to_token[char_idx] is None:
+            char_idx += direction
+        return char_to_token[char_idx] if 0 <= char_idx < len(char_to_token) else None
+    
+    token_spans = []
+    for start_char, end_char in char_spans:
+        # Find the start token
+        start_token = find_nearest_token(start_char, char_to_token, direction=1)
+        
+        # Find the end token
+        end_token = find_nearest_token(end_char - 1, char_to_token, direction=-1)
+        
+        # Handle cases where the span does not map to valid tokens
+        if start_token is None or end_token is None:
+            continue
+        
+        token_spans.append((start_token, end_token + 1))  # end_token is inclusive, so add 1
+    
+    return token_spans
+
+
 def set_seed(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -211,6 +246,11 @@ def create_mention_to_antecedent(span_starts, span_ends, coref_logits):
     batch_size, n_spans, _ = coref_logits.shape
 
     max_antecedents = coref_logits.argmax(axis=-1)
+    print('span_starts:', span_starts.shape)
+    print('span_ends:', span_ends.shape)
+    print('ARGMAX ANTECEDENTS:', max_antecedents.shape)
+    print(max_antecedents)
+    print()
     doc_indices, mention_indices = np.nonzero(max_antecedents < n_spans)        # indices where antecedent is not null.
     antecedent_indices = max_antecedents[max_antecedents < n_spans]
     span_indices = np.stack([span_starts, span_ends], axis=-1)
