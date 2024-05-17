@@ -66,6 +66,41 @@ class CorefResult:
         return self.__str__()
 
 
+def create_char_to_token_map(token_offsets):
+    max_char_idx = max(end for _, end in token_offsets)
+    char_to_token = [None] * (max_char_idx + 1)
+    
+    for token_idx, (start, end) in enumerate(token_offsets):
+        for char_idx in range(start, end):
+            char_to_token[char_idx] = token_idx
+
+    return char_to_token
+
+
+def map_char_spans_to_token_spans(char_spans, char_to_token):
+    def find_nearest_token(char_idx, char_to_token, direction=1):
+        while 0 <= char_idx < len(char_to_token) and char_to_token[char_idx] is None:
+            char_idx += direction
+        return char_to_token[char_idx] if 0 <= char_idx < len(char_to_token) else None
+
+    token_spans = []
+    for start_char, end_char in char_spans:
+        # Find the start token
+        start_token = find_nearest_token(start_char, char_to_token, direction=1)
+        
+        # Find the end token
+        end_token = find_nearest_token(end_char - 1, char_to_token, direction=-1)
+        
+        # Handle cases where the span does not map to valid tokens
+        if start_token is None or end_token is None:
+            continue
+        
+        # NOTE: Why do we have to add 1 to the start token?
+        token_spans.append((start_token + 1, end_token + 1))  # end_token is inclusive, so add 1
+
+    return token_spans
+
+
 class CorefModel(ABC):
     def __init__(self, model_name_or_path, coref_class, collator_class, enable_progress_bar, device=None, nlp="en_core_web_sm"):
         self.model_name_or_path = model_name_or_path
@@ -113,6 +148,7 @@ class CorefModel(ABC):
             output_loading_info=True
         )
         self.model.to(self.device)
+        self.model.tokenizer = self.tokenizer
 
         for key, val in loading_info.items():
             logger.info(f'{key}: {list(set(val) - set(["longformer.embeddings.position_ids"]))}')
@@ -129,11 +165,15 @@ class CorefModel(ABC):
         self.device = torch.device(self.device)
         self.n_gpu = torch.cuda.device_count()
 
-    def _create_dataset(self, texts, is_split_into_words):
+    def _create_dataset(self, texts, is_split_into_words, custom_mentions):
         logger.info(f'Tokenize {len(texts)} inputs...')
 
         # Save original text ordering for later use
-        dataset = {'text': texts, 'idx': range(len(texts))}
+        if custom_mentions is None:
+            dataset = {'text': texts, 'idx': range(len(texts))}
+        else:
+            dataset = {'text': texts, 'idx': range(len(texts)), 'custom_mentions': custom_mentions}
+
         if is_split_into_words:
             dataset['tokens'] = texts
 
@@ -153,21 +193,55 @@ class CorefModel(ABC):
             max_segment_len=self.max_segment_len,
             max_doc_len=self.max_doc_len
         )
-
         return dataloader
 
     def _batch_inference(self, batch):
+
         texts = batch['text']
         subtoken_map = batch['subtoken_map']
         token_to_char = batch['offset_mapping']
+
+        print('SUBTOKEN MAP:', subtoken_map)
+        print('TOKEN TO CHAR:', token_to_char)
+        print()
+
+        if 'custom_mentions' in batch:
+            custom_mentions = batch['custom_mentions']
+            
+            print('BATCH INF CUSTOM MENTIONS:')
+            print(custom_mentions)
+            print()
+
+            char_to_token = [create_char_to_token_map(token_to_char_) for token_to_char_ in token_to_char]
+
+            custom_mentions = [
+                map_char_spans_to_token_spans(char_spans, char_to_token)
+                for char_spans, char_to_token in zip(custom_mentions, char_to_token)
+            ]
+
+            print('UPDATED CUSTOM MENTIONS:')
+            print(custom_mentions)
+            print()
+            # custom_mentions = char_to_token_spans(custom_mentions, token_to_char)
+            # custom_mentions = [
+            #     char_to_token_spans(char_spans, token_to_char)
+            #     for char_spans in custom_mentions
+            # ]
+        else:
+            custom_mentions = None
+            
         idxs = batch['idx']
         with torch.no_grad():
-            outputs = self.model(batch, return_all_outputs=True)
+            outputs = self.model(batch, return_all_outputs=True, custom_mentions=custom_mentions)
 
         outputs_np = tuple(tensor.cpu().numpy() for tensor in outputs)
 
         span_starts, span_ends, mention_logits, coref_logits = outputs_np
         doc_indices, mention_to_antecedent = create_mention_to_antecedent(span_starts, span_ends, coref_logits)
+        
+        print('MENTION TO ANTECEDENT:')
+        print(mention_to_antecedent)
+        print()
 
         results = []
 
@@ -209,6 +283,7 @@ class CorefModel(ABC):
                 texts: Union[str, List[str], List[List[str]]],  # similar to huggingface tokenizer inputs
                 is_split_into_words: bool = False,
                 max_tokens_in_batch: int = 10000,
+                custom_mentions = None,
                 output_file: str = None):
         """
         texts (str, List[str], List[List[str]]) — The sequence or batch of sequences to be encoded.
@@ -258,8 +333,10 @@ class CorefModel(ABC):
 
         if not is_batched:
             texts = [texts]
+            if custom_mentions is not None:
+                custom_mentions = [custom_mentions]
 
-        dataset = self._create_dataset(texts, is_split_into_words)
+        dataset = self._create_dataset(texts, is_split_into_words, custom_mentions)
         dataloader = self._prepare_batches(dataset, max_tokens_in_batch)
 
         preds = self._inference(dataloader)
@@ -283,3 +360,4 @@ class FCoref(CorefModel):
 class LingMessCoref(CorefModel):
     def __init__(self, model_name_or_path='biu-nlp/lingmess-coref', device=None, nlp="en_core_web_sm", enable_progress_bar=True):
         super().__init__(model_name_or_path, LingMessModel, PadCollator, enable_progress_bar, device, nlp)
+

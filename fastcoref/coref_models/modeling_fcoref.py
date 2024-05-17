@@ -59,6 +59,8 @@ class FCorefModel(BertPreTrainedModel):
         self.antecedent_e2s_classifier = Linear(self.ffnn_size, self.ffnn_size)
 
         self.init_weights()
+        
+        self.tokenizer = None
 
     def num_parameters(self) -> tuple:
         def head_filter(x):
@@ -240,7 +242,7 @@ class FCorefModel(BertPreTrainedModel):
 
         return sequence_output, attention_mask
 
-    def forward(self, batch, gold_clusters=None, topk_1d_indices=None, return_all_outputs=False):
+    def forward(self, batch, gold_clusters=None, topk_1d_indices=None, return_all_outputs=False, custom_mentions=None):
         sequence_output, attention_mask = self.forward_transformer(batch)
 
         # Compute representations
@@ -253,8 +255,73 @@ class FCorefModel(BertPreTrainedModel):
         # mention scores
         mention_logits = self._calc_mention_logits(start_mention_reps, end_mention_reps)
 
+        print("CUSTOM MENTIONS:", custom_mentions)
+
         # prune mentions
         mention_start_ids, mention_end_ids, span_mask, topk_mention_logits = self._prune_topk_mentions(mention_logits, attention_mask, topk_1d_indices)
+
+        print('mention start/end ids')
+        print(mention_start_ids)
+        print(mention_end_ids)
+
+        # mention_start_ids = torch.tensor([[1, 4, 10, 11, 18], [1, 4, 10, 11, 18]], device=self.device)
+        # mention_end_ids = torch.tensor([[1, 4, 10, 11, 18], [1, 4, 10, 11, 18]], device=self.device)
+        # k_mentions = mention_start_ids.size(-1)
+        # span_mask = span_mask[:, :k_mentions]
+        # topk_mention_logits = topk_mention_logits[:, :k_mentions, :k_mentions]
+        
+
+        print()
+        print(mention_start_ids)
+        print(mention_end_ids)
+        print('SPAN MASK', span_mask.shape)
+        # print(span_mask)
+        # print()
+        
+
+        USE_CUSTOM_MENTIONS = True
+        if USE_CUSTOM_MENTIONS:
+            
+            
+            mention_start_ids = []
+            mention_end_ids = []
+
+            for token_spans in custom_mentions:
+                start_ids, end_ids = zip(*token_spans)
+                mention_start_ids.append(start_ids)
+                mention_end_ids.append(end_ids)
+            mention_start_ids = torch.tensor(mention_start_ids, device=self.device)
+            mention_end_ids = torch.tensor(mention_end_ids, device=self.device)
+            
+            span_mask = span_mask[:, :mention_start_ids.size(-1)]
+            # print('NEW MASK', span_mask.shape)
+            # print('CUSTOM MENTIONS IN FORWARD')
+            # print(custom_mentions)
+            # print('batch')
+            # print(batch)
+            # print()
+            # print('mention start IDS:')
+            # print(mention_start_ids)
+            # print()
+            # print('mention end IDS:')
+            # print(mention_end_ids)
+
+            spans = []
+            for i, j in zip(mention_start_ids[0], mention_end_ids[0]):
+                spans.append((i.item(), j.item()))
+            # print('INPUT IDS:')
+            # print()
+            # print(batch['input_ids'])
+            tokens = self.tokenizer.convert_ids_to_tokens(batch['input_ids'][0, 0])
+            print()
+            print('INPUT IDS:', batch['input_ids'][0, 0])
+            print()
+            print('N_TOKENS:', len(tokens))
+            print('TOKEN SPANS:')
+            for i, j in spans:
+                print(i, j, tokens[i:j])
+            print()
+
 
         batch_size, _, dim = start_coref_reps.size()
         max_k = mention_start_ids.size(-1)
@@ -262,12 +329,24 @@ class FCorefModel(BertPreTrainedModel):
 
         # Antecedent scores
         # gather reps
+
         topk_start_coref_reps = torch.gather(start_coref_reps, dim=1, index=mention_start_ids.unsqueeze(-1).expand(size))
         topk_end_coref_reps = torch.gather(end_coref_reps, dim=1, index=mention_end_ids.unsqueeze(-1).expand(size))
         coref_logits = self._calc_coref_logits(topk_start_coref_reps, topk_end_coref_reps)
 
-        final_logits = topk_mention_logits + coref_logits
-        final_logits = self._mask_antecedent_logits(final_logits, span_mask)
+        print('start coref reps:', start_coref_reps.shape)
+        print('coref logits:', coref_logits.shape)
+        print('topk_mention_logits:', topk_mention_logits.shape)
+        print(topk_mention_logits)
+        print()
+
+        if USE_CUSTOM_MENTIONS:
+            # final_logits = topk_mention_logits + coref_logits
+            final_logits = self._mask_antecedent_logits(coref_logits, span_mask)
+        else:
+            final_logits = topk_mention_logits + coref_logits
+            final_logits = self._mask_antecedent_logits(final_logits, span_mask)
+            final_logits = self._mask_antecedent_logits(final_logits, span_mask)
         # adding zero logits for null span
         final_logits = torch.cat((final_logits, torch.zeros((batch_size, max_k, 1), device=self.device)), dim=-1)  # [batch_size, max_k, max_k + 1]
 
