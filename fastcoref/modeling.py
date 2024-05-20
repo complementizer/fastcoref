@@ -66,23 +66,28 @@ class CorefResult:
         return self.__str__()
 
 
-def create_char_to_token_map(token_offsets):
-    max_char_idx = max(end for _, end in token_offsets)
-    char_to_token = [None] * (max_char_idx + 1)
+def create_char_to_token_map(token_to_char, text):
+    """
+    Creates a mapping from character offsets to token offsets,
+    based on transformer tokenizer output.
+    """
+    char_to_token_map = [None] * len(text)  # Start with -1 for characters that might not map to any token
+    for token_index, (start, end) in enumerate(token_to_char):
+        for char_index in range(start, end):
+            char_to_token_map[char_index] = token_index
+    return char_to_token_map
+
+
+def find_nearest_token(char_idx, char_to_token, direction=1):
+    while 0 <= char_idx < len(char_to_token) and char_to_token[char_idx] is None:
+        char_idx += direction
+    return char_to_token[char_idx] if 0 <= char_idx < len(char_to_token) else None
+
+
+def map_char_spans_to_token_spans(char_spans, char_to_token, subtoken_map):
+
+    real_to_weird_token_map = {subtoken_map[i]: i for i in range(len(subtoken_map))}
     
-    for token_idx, (start, end) in enumerate(token_offsets):
-        for char_idx in range(start, end):
-            char_to_token[char_idx] = token_idx
-
-    return char_to_token
-
-
-def map_char_spans_to_token_spans(char_spans, char_to_token):
-    def find_nearest_token(char_idx, char_to_token, direction=1):
-        while 0 <= char_idx < len(char_to_token) and char_to_token[char_idx] is None:
-            char_idx += direction
-        return char_to_token[char_idx] if 0 <= char_idx < len(char_to_token) else None
-
     token_spans = []
     for start_char, end_char in char_spans:
         # Find the start token
@@ -93,10 +98,18 @@ def map_char_spans_to_token_spans(char_spans, char_to_token):
         
         # Handle cases where the span does not map to valid tokens
         if start_token is None or end_token is None:
+            token_spans.append((None, None))
             continue
-        
-        # NOTE: Why do we have to add 1 to the start token?
-        token_spans.append((start_token + 1, end_token + 1))  # end_token is inclusive, so add 1
+
+        # Map using subtoken_map if available
+        if subtoken_map is not None:
+            start_token = real_to_weird_token_map[start_token]
+            end_token = real_to_weird_token_map[end_token]
+
+            if start_token is None or end_token is None:
+                token_spans.append((None, None))
+                continue
+        token_spans.append((start_token, end_token))  # end_token is inclusive, so add 1
 
     return token_spans
 
@@ -201,32 +214,18 @@ class CorefModel(ABC):
         subtoken_map = batch['subtoken_map']
         token_to_char = batch['offset_mapping']
 
-        print('SUBTOKEN MAP:', subtoken_map)
-        print('TOKEN TO CHAR:', token_to_char)
-        print()
-
         if 'custom_mentions' in batch:
             custom_mentions = batch['custom_mentions']
-            
-            print('BATCH INF CUSTOM MENTIONS:')
-            print(custom_mentions)
-            print()
 
-            char_to_token = [create_char_to_token_map(token_to_char_) for token_to_char_ in token_to_char]
-
-            custom_mentions = [
-                map_char_spans_to_token_spans(char_spans, char_to_token)
-                for char_spans, char_to_token in zip(custom_mentions, char_to_token)
+            char_to_token = [
+                create_char_to_token_map(token_to_char_, text)
+                for token_to_char_, text in zip(token_to_char, texts)
             ]
 
-            print('UPDATED CUSTOM MENTIONS:')
-            print(custom_mentions)
-            print()
-            # custom_mentions = char_to_token_spans(custom_mentions, token_to_char)
-            # custom_mentions = [
-            #     char_to_token_spans(char_spans, token_to_char)
-            #     for char_spans in custom_mentions
-            # ]
+            custom_mentions = [
+                map_char_spans_to_token_spans(char_spans, char_to_token_, subtoken_map=subtoken_map_)
+                for char_spans, char_to_token_, subtoken_map_ in zip(custom_mentions, char_to_token, subtoken_map)
+            ]
         else:
             custom_mentions = None
             
@@ -238,10 +237,6 @@ class CorefModel(ABC):
 
         span_starts, span_ends, mention_logits, coref_logits = outputs_np
         doc_indices, mention_to_antecedent = create_mention_to_antecedent(span_starts, span_ends, coref_logits)
-        
-        print('MENTION TO ANTECEDENT:')
-        print(mention_to_antecedent)
-        print()
 
         results = []
 

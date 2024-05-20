@@ -85,7 +85,6 @@ def update_metrics(metrics, span_starts, span_ends, gold_clusters, predicted_clu
 
 def encode(batch, tokenizer, nlp):
     if nlp is not None:
-        print('USING SPACY...')
         tokenized_texts = tokenize_with_spacy(batch['text'], nlp)
     else:
         tokenized_texts = batch
@@ -135,9 +134,11 @@ def tokenize_with_spacy(texts, nlp):
 
 
 def align_to_char_level(span_starts, span_ends, token_to_char, subtoken_map=None, new_token_map=None):
+
     char_map = {}
     reverse_char_map = {}
     for idx, (start, end) in enumerate(zip(span_starts, span_ends)):
+        
         new_start, new_end = start.copy(), end.copy()
 
         try:
@@ -158,17 +159,6 @@ def align_to_char_level(span_starts, span_ends, token_to_char, subtoken_map=None
             continue
 
     return char_map, reverse_char_map
-
-
-def create_char_to_token_map(token_offsets):
-    max_char_idx = max(end for _, end in token_offsets)
-    char_to_token = [None] * (max_char_idx + 1)
-    
-    for token_idx, (start, end) in enumerate(token_offsets):
-        for char_idx in range(start, end):
-            char_to_token[char_idx] = token_idx
-
-    return char_to_token
 
 
 def map_char_spans_to_token_spans(char_spans, char_to_token):
@@ -246,11 +236,6 @@ def create_mention_to_antecedent(span_starts, span_ends, coref_logits):
     batch_size, n_spans, _ = coref_logits.shape
 
     max_antecedents = coref_logits.argmax(axis=-1)
-    print('span_starts:', span_starts.shape)
-    print('span_ends:', span_ends.shape)
-    print('ARGMAX ANTECEDENTS:', max_antecedents.shape)
-    print(max_antecedents)
-    print()
     doc_indices, mention_indices = np.nonzero(max_antecedents < n_spans)        # indices where antecedent is not null.
     antecedent_indices = max_antecedents[max_antecedents < n_spans]
     span_indices = np.stack([span_starts, span_ends], axis=-1)

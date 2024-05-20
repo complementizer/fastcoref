@@ -2,8 +2,9 @@ import torch
 from torch.nn import Module, Linear, LayerNorm, Dropout
 from transformers import BertPreTrainedModel, AutoModel
 from transformers.activations import ACT2FN
+from torch.nn.utils.rnn import pad_sequence
 
-from fastcoref.utilities.util import extract_clusters, extract_mentions_to_clusters, mask_tensor
+from fastcoref.utilities.util import extract_clusters, extract_mentions_to_clusters, mask_tensor, align_to_char_level
 
 # took from: https://github.com/yuvalkirstain/s2e-coref
 
@@ -255,73 +256,29 @@ class FCorefModel(BertPreTrainedModel):
         # mention scores
         mention_logits = self._calc_mention_logits(start_mention_reps, end_mention_reps)
 
-        print("CUSTOM MENTIONS:", custom_mentions)
-
         # prune mentions
         mention_start_ids, mention_end_ids, span_mask, topk_mention_logits = self._prune_topk_mentions(mention_logits, attention_mask, topk_1d_indices)
 
-        print('mention start/end ids')
-        print(mention_start_ids)
-        print(mention_end_ids)
+        if custom_mentions is not None:
 
-        # mention_start_ids = torch.tensor([[1, 4, 10, 11, 18], [1, 4, 10, 11, 18]], device=self.device)
-        # mention_end_ids = torch.tensor([[1, 4, 10, 11, 18], [1, 4, 10, 11, 18]], device=self.device)
-        # k_mentions = mention_start_ids.size(-1)
-        # span_mask = span_mask[:, :k_mentions]
-        # topk_mention_logits = topk_mention_logits[:, :k_mentions, :k_mentions]
-        
-
-        print()
-        print(mention_start_ids)
-        print(mention_end_ids)
-        print('SPAN MASK', span_mask.shape)
-        # print(span_mask)
-        # print()
-        
-
-        USE_CUSTOM_MENTIONS = True
-        if USE_CUSTOM_MENTIONS:
-            
-            
             mention_start_ids = []
             mention_end_ids = []
 
+            # Collect all the start and end ids as tensors
             for token_spans in custom_mentions:
                 start_ids, end_ids = zip(*token_spans)
-                mention_start_ids.append(start_ids)
-                mention_end_ids.append(end_ids)
-            mention_start_ids = torch.tensor(mention_start_ids, device=self.device)
-            mention_end_ids = torch.tensor(mention_end_ids, device=self.device)
-            
-            span_mask = span_mask[:, :mention_start_ids.size(-1)]
-            # print('NEW MASK', span_mask.shape)
-            # print('CUSTOM MENTIONS IN FORWARD')
-            # print(custom_mentions)
-            # print('batch')
-            # print(batch)
-            # print()
-            # print('mention start IDS:')
-            # print(mention_start_ids)
-            # print()
-            # print('mention end IDS:')
-            # print(mention_end_ids)
+                mention_start_ids.append(torch.tensor(start_ids, device=self.device))
+                mention_end_ids.append(torch.tensor(end_ids, device=self.device))
 
-            spans = []
-            for i, j in zip(mention_start_ids[0], mention_end_ids[0]):
-                spans.append((i.item(), j.item()))
-            # print('INPUT IDS:')
-            # print()
-            # print(batch['input_ids'])
-            tokens = self.tokenizer.convert_ids_to_tokens(batch['input_ids'][0, 0])
-            print()
-            print('INPUT IDS:', batch['input_ids'][0, 0])
-            print()
-            print('N_TOKENS:', len(tokens))
-            print('TOKEN SPANS:')
-            for i, j in spans:
-                print(i, j, tokens[i:j])
-            print()
+            # Pad the sequences to the same length
+            mention_start_ids = pad_sequence(mention_start_ids, batch_first=True, padding_value=0)
+            mention_end_ids = pad_sequence(mention_end_ids, batch_first=True, padding_value=0)
 
+            # Determine the maximum length after padding
+            max_len = mention_start_ids.size(1)
+
+            # Trim span_mask to the maximum length
+            span_mask = span_mask[:, :max_len]
 
         batch_size, _, dim = start_coref_reps.size()
         max_k = mention_start_ids.size(-1)
@@ -334,18 +291,11 @@ class FCorefModel(BertPreTrainedModel):
         topk_end_coref_reps = torch.gather(end_coref_reps, dim=1, index=mention_end_ids.unsqueeze(-1).expand(size))
         coref_logits = self._calc_coref_logits(topk_start_coref_reps, topk_end_coref_reps)
 
-        print('start coref reps:', start_coref_reps.shape)
-        print('coref logits:', coref_logits.shape)
-        print('topk_mention_logits:', topk_mention_logits.shape)
-        print(topk_mention_logits)
-        print()
-
-        if USE_CUSTOM_MENTIONS:
+        if custom_mentions is not None:
             # final_logits = topk_mention_logits + coref_logits
             final_logits = self._mask_antecedent_logits(coref_logits, span_mask)
         else:
             final_logits = topk_mention_logits + coref_logits
-            final_logits = self._mask_antecedent_logits(final_logits, span_mask)
             final_logits = self._mask_antecedent_logits(final_logits, span_mask)
         # adding zero logits for null span
         final_logits = torch.cat((final_logits, torch.zeros((batch_size, max_k, 1), device=self.device)), dim=-1)  # [batch_size, max_k, max_k + 1]
@@ -364,5 +314,3 @@ class FCorefModel(BertPreTrainedModel):
             outputs = (loss, ) + outputs
 
         return outputs
-
-
