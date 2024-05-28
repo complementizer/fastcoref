@@ -260,14 +260,14 @@ class CorefModel(ABC):
 
     def _inference(self, dataloader):
         self.model.eval()
-        logger.info(f"***** Running Inference on {len(dataloader.dataset)} texts *****")
+        # logger.info(f"***** Running Inference on {len(dataloader.dataset)} texts *****")
 
         results = []
         if self.enable_progress_bar:
-            with tqdm(desc="Inference", total=len(dataloader.dataset)) as progress_bar:
-                for batch in dataloader:
-                    results.extend(self._batch_inference(batch))
-                    progress_bar.update(n=len(batch['text']))
+            # with tqdm(desc="Inference", total=len(dataloader.dataset)) as progress_bar:
+            for batch in dataloader:
+                results.extend(self._batch_inference(batch))
+                # progress_bar.update(n=len(batch['text']))
         else:
             for batch in dataloader:
                 results.extend(self._batch_inference(batch))
@@ -333,7 +333,6 @@ class CorefModel(ABC):
 
         dataset = self._create_dataset(texts, is_split_into_words, custom_mentions)
         dataloader = self._prepare_batches(dataset, max_tokens_in_batch)
-
         preds = self._inference(dataloader)
         if output_file is not None:
             with open(output_file, 'w') as f:
