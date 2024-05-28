@@ -264,10 +264,10 @@ class CorefModel(ABC):
 
         results = []
         if self.enable_progress_bar:
-            # with tqdm(desc="Inference", total=len(dataloader.dataset)) as progress_bar:
-            for batch in dataloader:
-                results.extend(self._batch_inference(batch))
-                # progress_bar.update(n=len(batch['text']))
+            with tqdm(desc="Inference", total=len(dataloader.dataset)) as progress_bar:
+                for batch in dataloader:
+                    results.extend(self._batch_inference(batch))
+                    progress_bar.update(n=len(batch['text']))
         else:
             for batch in dataloader:
                 results.extend(self._batch_inference(batch))
@@ -347,11 +347,11 @@ class CorefModel(ABC):
 
 
 class FCoref(CorefModel):
-    def __init__(self, model_name_or_path='biu-nlp/f-coref', device=None, nlp="en_core_web_sm", enable_progress_bar=True):
+    def __init__(self, model_name_or_path='biu-nlp/f-coref', device=None, nlp="en_core_web_sm", enable_progress_bar=False):
         super().__init__(model_name_or_path, FCorefModel, LeftOversCollator, enable_progress_bar, device, nlp)
 
 
 class LingMessCoref(CorefModel):
-    def __init__(self, model_name_or_path='biu-nlp/lingmess-coref', device=None, nlp="en_core_web_sm", enable_progress_bar=True):
+    def __init__(self, model_name_or_path='biu-nlp/lingmess-coref', device=None, nlp="en_core_web_sm", enable_progress_bar=False):
         super().__init__(model_name_or_path, LingMessModel, PadCollator, enable_progress_bar, device, nlp)
 
