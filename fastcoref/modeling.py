@@ -179,7 +179,7 @@ class CorefModel(ABC):
         self.n_gpu = torch.cuda.device_count()
 
     def _create_dataset(self, texts, is_split_into_words, custom_mentions):
-        logger.info(f'Tokenize {len(texts)} inputs...')
+        # logger.info(f'Tokenize {len(texts)} inputs...')
 
         # Save original text ordering for later use
         if custom_mentions is None:
